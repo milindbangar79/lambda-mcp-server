@@ -18,6 +18,12 @@ public enum CompoundingFrequency {
         return periodsPerYear;
     }
 
+    /**
+     * Parses the request's {@code compoundingFrequency} string (case-insensitive),
+     * defaulting to {@link #ANNUALLY} when omitted or blank.
+     *
+     * @throws IllegalArgumentException if {@code value} is non-blank but not one of the enum names
+     */
     public static CompoundingFrequency fromRequestValue(String value) {
         if (value == null || value.isBlank()) {
             return ANNUALLY;

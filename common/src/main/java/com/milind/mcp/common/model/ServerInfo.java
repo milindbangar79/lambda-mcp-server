@@ -1,5 +1,10 @@
 package com.milind.mcp.common.model;
 
+/**
+ * Identifies this MCP server to a client, carried inside {@link InitializeResult}.
+ * Purely informational — clients use it for logging/diagnostics, not protocol
+ * negotiation (that's {@code protocolVersion}'s job).
+ */
 public class ServerInfo {
 
     private String name;

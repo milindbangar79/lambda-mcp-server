@@ -25,6 +25,14 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
+/**
+ * Unit tests for {@link McpProtocolService}'s JSON-RPC dispatch logic: routing
+ * {@code initialize}/{@code tools/list}/{@code tools/call}, the notification
+ * (no-response) short-circuit, and the JSON-RPC-error vs. {@code isError} result
+ * distinction for unknown/unpublished tools versus in-tool execution failures.
+ * {@link ToolRegistryService} and {@link ToolDispatcherService} are mocked so only
+ * the protocol handler's own branching is under test.
+ */
 class McpProtocolServiceTest {
 
     private final ObjectMapper objectMapper = new ObjectMapper();

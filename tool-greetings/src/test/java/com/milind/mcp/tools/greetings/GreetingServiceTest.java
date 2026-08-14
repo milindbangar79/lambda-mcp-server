@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+/** Unit tests for {@link GreetingService}: name trimming/formatting and blank/null-name validation. */
 class GreetingServiceTest {
 
     private final GreetingService service = new GreetingService();

@@ -5,6 +5,12 @@ import com.amazonaws.services.lambda.runtime.Context;
 import com.amazonaws.services.lambda.runtime.RequestHandler;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 
+/**
+ * Lambda entry point for the "simple-interest-calculator" tool. Like
+ * {@code GreetingLambdaHandler}, the plain Spring {@link AnnotationConfigApplicationContext}
+ * is built once in the constructor (cold-start only) and the resolved
+ * {@link SimpleInterestService} bean is reused across every warm invocation.
+ */
 public class SimpleInterestLambdaHandler implements RequestHandler<SimpleInterestRequest, SimpleInterestResponse> {
 
     private final SimpleInterestService simpleInterestService;
@@ -21,6 +27,7 @@ public class SimpleInterestLambdaHandler implements RequestHandler<SimpleInteres
         return simpleInterestService.calculate(input);
     }
 
+    /** Correlation ID set by the router via ClientContext (see ToolDispatcherService). */
     private String extractCorrelationId(Context context) {
         ClientContext clientContext = context.getClientContext();
         if (clientContext == null || clientContext.getCustom() == null) {

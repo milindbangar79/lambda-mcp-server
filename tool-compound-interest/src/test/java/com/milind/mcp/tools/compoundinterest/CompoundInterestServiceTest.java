@@ -6,6 +6,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.within;
 
+/**
+ * Unit tests for {@link CompoundInterestService}: default/explicit compounding
+ * frequency resolution, formula correctness, and input validation.
+ */
 class CompoundInterestServiceTest {
 
     private final CompoundInterestService service = new CompoundInterestService();

@@ -1,5 +1,11 @@
 package com.milind.mcp.tools.compoundinterest;
 
+/**
+ * Input for the "compound-interest-calculator" tool: {@code principal}, the annual
+ * {@code rateOfInterest} as a percentage, {@code timeInYears}, and an optional
+ * {@code compoundingFrequency} (see {@link CompoundingFrequency}). The first three are
+ * required and must be greater than zero; see {@link CompoundInterestService} for validation.
+ */
 public class CompoundInterestRequest {
 
     private Double principal;

@@ -2,9 +2,21 @@ package com.milind.mcp.tools.compoundinterest;
 
 import org.springframework.stereotype.Service;
 
+/**
+ * The "compound-interest-calculator" tool's business logic: A = P(1 + r/n)^(nt), where
+ * n is the compounding periods per year resolved from {@link CompoundingFrequency}.
+ */
 @Service
 public class CompoundInterestService {
 
+    /**
+     * @param request must have {@code principal}, {@code rateOfInterest}, and
+     *                {@code timeInYears} all present and greater than zero;
+     *                {@code compoundingFrequency} is optional (defaults to ANNUALLY)
+     * @return the computed interest, total amount, resolved compounding frequency, and formula used
+     * @throws IllegalArgumentException if {@code request} is {@code null}, a required field is
+     *                                  missing/non-positive, or {@code compoundingFrequency} is unrecognized
+     */
     public CompoundInterestResponse calculate(CompoundInterestRequest request) {
         validate(request);
 

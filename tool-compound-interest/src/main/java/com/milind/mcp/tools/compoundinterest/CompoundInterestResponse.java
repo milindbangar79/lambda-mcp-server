@@ -1,5 +1,10 @@
 package com.milind.mcp.tools.compoundinterest;
 
+/**
+ * Result of a "compound-interest-calculator" tool call: echoes the inputs (including the
+ * resolved {@code compoundingFrequency}) alongside the computed {@code interest} and
+ * {@code totalAmount}, plus the {@code formula} used.
+ */
 public class CompoundInterestResponse {
 
     private double principal;

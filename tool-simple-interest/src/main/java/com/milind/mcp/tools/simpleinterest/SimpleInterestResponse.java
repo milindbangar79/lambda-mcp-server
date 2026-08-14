@@ -1,5 +1,10 @@
 package com.milind.mcp.tools.simpleinterest;
 
+/**
+ * Result of a "simple-interest-calculator" tool call: echoes the inputs back alongside
+ * the computed {@code interest} and {@code totalAmount} (principal + interest), plus the
+ * {@code formula} used, so a client can display the calculation without hardcoding it.
+ */
 public class SimpleInterestResponse {
 
     private double principal;

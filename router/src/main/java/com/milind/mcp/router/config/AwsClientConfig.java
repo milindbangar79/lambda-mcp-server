@@ -5,6 +5,7 @@ import org.springframework.context.annotation.Configuration;
 import software.amazon.awssdk.http.urlconnection.UrlConnectionHttpClient;
 import software.amazon.awssdk.services.lambda.LambdaClient;
 
+/** Provides the AWS SDK client(s) the router needs to talk to other AWS services. */
 @Configuration
 public class AwsClientConfig {
 

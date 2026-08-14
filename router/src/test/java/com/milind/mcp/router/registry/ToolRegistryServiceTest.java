@@ -8,6 +8,12 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+/**
+ * Unit tests for {@link ToolRegistryService}: that {@code gateStatus} correctly gates
+ * {@code tools/list} visibility while {@code findByName} lookup (used by the dispatch
+ * path) stays gate-status-agnostic, since the router - not the registry - is what
+ * decides whether an unpublished tool may be dispatched to.
+ */
 class ToolRegistryServiceTest {
 
     private final ToolDefinition published = new ToolDefinition(

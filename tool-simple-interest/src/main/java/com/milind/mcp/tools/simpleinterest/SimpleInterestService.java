@@ -2,9 +2,20 @@ package com.milind.mcp.tools.simpleinterest;
 
 import org.springframework.stereotype.Service;
 
+/**
+ * The "simple-interest-calculator" tool's business logic: SI = (P x R x T) / 100,
+ * with total amount = principal + interest.
+ */
 @Service
 public class SimpleInterestService {
 
+    /**
+     * @param request must have {@code principal}, {@code rateOfInterest}, and
+     *                {@code timeInYears} all present and greater than zero
+     * @return the computed interest, total amount, and formula used
+     * @throws IllegalArgumentException if {@code request} is {@code null} or any
+     *                                  required field is missing/non-positive
+     */
     public SimpleInterestResponse calculate(SimpleInterestRequest request) {
         validate(request);
 

@@ -2,6 +2,12 @@ package com.milind.mcp.common.protocol;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
 
+/**
+ * The {@code error} member of a {@link JsonRpcResponse}, per the JSON-RPC 2.0 spec:
+ * a numeric {@code code} (see {@link McpErrorCodes}), a human-readable {@code message},
+ * and an optional structured {@code data} payload for machine-readable detail (e.g. the
+ * {@code limit}/{@code window}/{@code retryAfter} fields a future rate-limit error would carry).
+ */
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public class JsonRpcError {
 
