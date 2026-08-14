@@ -7,5 +7,5 @@ spring:
 logging:
   level:
     root: INFO
-    com.example.mcp: INFO
+    com.milind.mcp: INFO
     software.amazon.awssdk: WARN
