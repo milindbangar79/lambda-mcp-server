@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>com.example.mcp</groupId>
+    <artifactId>lambda-mcp-server-parent</artifactId>
+    <version>1.0.0</version>
+  </parent>
+
+  <artifactId>tool-greetings</artifactId>
+  <packaging>jar</packaging>
+  <name>MCP Tool: greetings</name>
+  <description>
+    Single-purpose tool Lambda. Deliberately does NOT depend on spring-boot-starter-web
+    or pull in Spring Boot autoconfiguration - Blueprint Section 5.1 flags booting a full
+    Spring ApplicationContext inside a single-purpose tool Lambda as the main
+    self-inflicted cause of cold-start pain. This module uses plain spring-context for
+    @Component/@Autowired wiring only, which still demonstrates Spring DI constructs
+    without carrying Boot's autoconfiguration/classpath-scanning machinery.
+  </description>
+
+  <dependencies>
+    <dependency>
+      <groupId>org.springframework</groupId>
+      <artifactId>spring-context</artifactId>
+    </dependency>
+
+    <dependency>
+      <groupId>com.amazonaws</groupId>
+      <artifactId>aws-lambda-java-core</artifactId>
+    </dependency>
+
+    <dependency>
+      <groupId>com.fasterxml.jackson.core</groupId>
+      <artifactId>jackson-databind</artifactId>
+    </dependency>
+
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.assertj</groupId>
+      <artifactId>assertj-core</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <finalName>tool-greetings</finalName>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-shade-plugin</artifactId>
+      </plugin>
+    </plugins>
+  </build>
+</project>

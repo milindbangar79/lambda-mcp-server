@@ -1,0 +1,11 @@
+spring:
+  main:
+    web-application-type: none
+    banner-mode: off
+    lazy-initialization: false
+
+logging:
+  level:
+    root: INFO
+    com.example.mcp: INFO
+    software.amazon.awssdk: WARN

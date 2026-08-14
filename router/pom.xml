@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>com.example.mcp</groupId>
+    <artifactId>lambda-mcp-server-parent</artifactId>
+    <version>1.0.0</version>
+  </parent>
+
+  <artifactId>router</artifactId>
+  <packaging>jar</packaging>
+  <name>MCP Router Lambda</name>
+  <description>
+    The lambda-mcp-server function: terminates the MCP JSON-RPC endpoint behind API
+    Gateway, discovers tools from the registry (Blueprint Section 4), and dispatches
+    tools/call to the correct per-tool Lambda. This is the one container in the
+    Blueprint's architecture complex enough to justify a full Spring Boot context
+    (Section 4.3 decomposes it into protocol handler / registry client / dispatcher) -
+    unlike the single-purpose tool Lambdas, which deliberately stay off spring-boot-web
+    per Section 5.1's anti-pattern warning.
+  </description>
+
+  <dependencies>
+    <dependency>
+      <groupId>com.example.mcp</groupId>
+      <artifactId>common</artifactId>
+    </dependency>
+
+    <!-- Spring Boot core only - no spring-boot-starter-web. The router isn't a servlet
+         app; it's a plain Lambda handler that bootstraps a non-web ApplicationContext
+         once per execution environment and reuses it across warm invocations. Default
+         Logback logging is kept as-is: anything written to stdout/stderr in the Lambda
+         Java runtime is captured to CloudWatch Logs automatically, no special appender
+         needed for a sample like this. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter</artifactId>
+    </dependency>
+
+    <dependency>
+      <groupId>com.amazonaws</groupId>
+      <artifactId>aws-lambda-java-core</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>com.amazonaws</groupId>
+      <artifactId>aws-lambda-java-events</artifactId>
+    </dependency>
+
+    <!-- Router invokes the per-tool Lambdas synchronously via the AWS SDK -->
+    <dependency>
+      <groupId>software.amazon.awssdk</groupId>
+      <artifactId>lambda</artifactId>
+      <exclusions>
+        <!-- default Apache/Netty HTTP clients are heavier than a Lambda needs;
+             url-connection-client below is the lightweight, cold-start-friendly pick
+             recommended for SDK v2 usage from inside Lambda. -->
+        <exclusion>
+          <groupId>software.amazon.awssdk</groupId>
+          <artifactId>netty-nio-client</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>software.amazon.awssdk</groupId>
+          <artifactId>apache-client</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+    <dependency>
+      <groupId>software.amazon.awssdk</groupId>
+      <artifactId>url-connection-client</artifactId>
+    </dependency>
+
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-test</artifactId>
+      <scope>test</scope>
+      <exclusions>
+        <exclusion>
+          <groupId>org.junit.vintage</groupId>
+          <artifactId>junit-vintage-engine</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+    <dependency>
+      <groupId>org.assertj</groupId>
+      <artifactId>assertj-core</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <finalName>router</finalName>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-shade-plugin</artifactId>
+      </plugin>
+    </plugins>
+  </build>
+</project>

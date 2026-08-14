@@ -1,0 +1,165 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <groupId>com.example.mcp</groupId>
+  <artifactId>lambda-mcp-server-parent</artifactId>
+  <version>1.0.0</version>
+  <packaging>pom</packaging>
+
+  <name>Lambda MCP Server (Sample)</name>
+  <description>
+    Sample Model Context Protocol (MCP) server hosted on AWS Lambda + API Gateway.
+    One "router" Lambda discovers and dispatches to per-tool Lambdas (greetings,
+    simple-interest-calculator, compound-interest-calculator), following the
+    architecture in the org's MCP Server &amp; Tool Hosting Blueprint (AWS Lambda track).
+  </description>
+
+  <modules>
+    <module>common</module>
+    <module>router</module>
+    <module>tool-greetings</module>
+    <module>tool-simple-interest</module>
+    <module>tool-compound-interest</module>
+  </modules>
+
+  <properties>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <maven.compiler.release>21</maven.compiler.release>
+
+    <spring-boot.version>3.3.5</spring-boot.version>
+    <spring-framework.version>6.1.14</spring-framework.version>
+    <aws-sdk.version>2.28.11</aws-sdk.version>
+    <aws-lambda-java-core.version>1.2.3</aws-lambda-java-core.version>
+    <aws-lambda-java-events.version>3.13.0</aws-lambda-java-events.version>
+
+    <junit.version>5.11.2</junit.version>
+    <mockito.version>5.14.1</mockito.version>
+    <assertj.version>3.26.3</assertj.version>
+
+    <maven-shade-plugin.version>3.6.0</maven-shade-plugin.version>
+    <maven-compiler-plugin.version>3.13.0</maven-compiler-plugin.version>
+    <maven-surefire-plugin.version>3.5.1</maven-surefire-plugin.version>
+  </properties>
+
+  <dependencyManagement>
+    <dependencies>
+      <!-- Spring Boot BOM - manages Spring + Jackson + Logback versions consistently
+           across all modules, even the thin tool Lambdas that don't pull in Spring Boot
+           itself (see module poms for rationale). -->
+      <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-dependencies</artifactId>
+        <version>${spring-boot.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+
+      <dependency>
+        <groupId>software.amazon.awssdk</groupId>
+        <artifactId>bom</artifactId>
+        <version>${aws-sdk.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+
+      <dependency>
+        <groupId>com.amazonaws</groupId>
+        <artifactId>aws-lambda-java-core</artifactId>
+        <version>${aws-lambda-java-core.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.amazonaws</groupId>
+        <artifactId>aws-lambda-java-events</artifactId>
+        <version>${aws-lambda-java-events.version}</version>
+      </dependency>
+
+      <dependency>
+        <groupId>org.assertj</groupId>
+        <artifactId>assertj-core</artifactId>
+        <version>${assertj.version}</version>
+      </dependency>
+
+      <dependency>
+        <groupId>com.example.mcp</groupId>
+        <artifactId>common</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+
+  <build>
+    <pluginManagement>
+      <plugins>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-compiler-plugin</artifactId>
+          <version>${maven-compiler-plugin.version}</version>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-surefire-plugin</artifactId>
+          <version>${maven-surefire-plugin.version}</version>
+        </plugin>
+        <!-- Fat/uber jars via shade, NOT spring-boot:repackage. Lambda's runtime
+             loads the handler class straight off the classpath; the nested-jar
+             layout that spring-boot-maven-plugin produces needs a custom
+             ClassLoader/JarLauncher that the standard Lambda Java runtime
+             doesn't provide, so every module (router included) shades instead. -->
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-shade-plugin</artifactId>
+          <version>${maven-shade-plugin.version}</version>
+          <executions>
+            <execution>
+              <phase>package</phase>
+              <goals>
+                <goal>shade</goal>
+              </goals>
+              <configuration>
+                <createDependencyReducedPom>false</createDependencyReducedPom>
+                <filters>
+                  <filter>
+                    <artifact>*:*</artifact>
+                    <excludes>
+                      <exclude>META-INF/*.SF</exclude>
+                      <exclude>META-INF/*.DSA</exclude>
+                      <exclude>META-INF/*.RSA</exclude>
+                      <exclude>module-info.class</exclude>
+                    </excludes>
+                  </filter>
+                </filters>
+                <transformers>
+                  <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                  <!-- Spring Boot 3 autoconfiguration index; several starter jars
+                       contribute to this single resource path, so entries must be
+                       appended rather than the last jar's copy winning. Only
+                       exercised by the router module, harmless elsewhere. -->
+                  <transformer implementation="org.apache.maven.plugins.shade.resource.AppendingTransformer">
+                    <resource>META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports</resource>
+                  </transformer>
+                  <transformer implementation="org.apache.maven.plugins.shade.resource.AppendingTransformer">
+                    <resource>META-INF/spring.factories</resource>
+                  </transformer>
+                </transformers>
+              </configuration>
+            </execution>
+          </executions>
+        </plugin>
+      </plugins>
+    </pluginManagement>
+
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+      </plugin>
+    </plugins>
+  </build>
+</project>
