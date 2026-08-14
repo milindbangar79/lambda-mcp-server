@@ -94,10 +94,10 @@ Build artifacts:
 
 | Module | Jar | Handler |
 |---|---|---|
-| router | `router/target/router.jar` (~20 MB) | `com.example.mcp.router.McpRouterHandler::handleRequest` |
-| tool-greetings | `tool-greetings/target/tool-greetings.jar` (~7 MB) | `com.example.mcp.tools.greetings.GreetingLambdaHandler::handleRequest` |
-| tool-simple-interest | `tool-simple-interest/target/tool-simple-interest.jar` (~7 MB) | `com.example.mcp.tools.simpleinterest.SimpleInterestLambdaHandler::handleRequest` |
-| tool-compound-interest | `tool-compound-interest/target/tool-compound-interest.jar` (~7 MB) | `com.example.mcp.tools.compoundinterest.CompoundInterestLambdaHandler::handleRequest` |
+| router | `router/target/router.jar` (~20 MB) | `com.milind.mcp.router.McpRouterHandler::handleRequest` |
+| tool-greetings | `tool-greetings/target/tool-greetings.jar` (~7 MB) | `com.milind.mcp.tools.greetings.GreetingLambdaHandler::handleRequest` |
+| tool-simple-interest | `tool-simple-interest/target/tool-simple-interest.jar` (~7 MB) | `com.milind.mcp.tools.simpleinterest.SimpleInterestLambdaHandler::handleRequest` |
+| tool-compound-interest | `tool-compound-interest/target/tool-compound-interest.jar` (~7 MB) | `com.milind.mcp.tools.compoundinterest.CompoundInterestLambdaHandler::handleRequest` |
 
 All comfortably under Lambda's 50 MB zip direct-upload limit (Blueprint §5.1).
 
@@ -183,7 +183,7 @@ sleep 10
 aws lambda create-function \
   --function-name mcp-tool-greetings \
   --runtime java21 \
-  --handler com.example.mcp.tools.greetings.GreetingLambdaHandler::handleRequest \
+  --handler com.milind.mcp.tools.greetings.GreetingLambdaHandler::handleRequest \
   --role arn:aws:iam::${ACCOUNT_ID}:role/mcp-tool-execution-role \
   --zip-file fileb://tool-greetings/target/tool-greetings.jar \
   --timeout 15 \
@@ -192,7 +192,7 @@ aws lambda create-function \
 aws lambda create-function \
   --function-name mcp-tool-simple-interest \
   --runtime java21 \
-  --handler com.example.mcp.tools.simpleinterest.SimpleInterestLambdaHandler::handleRequest \
+  --handler com.milind.mcp.tools.simpleinterest.SimpleInterestLambdaHandler::handleRequest \
   --role arn:aws:iam::${ACCOUNT_ID}:role/mcp-tool-execution-role \
   --zip-file fileb://tool-simple-interest/target/tool-simple-interest.jar \
   --timeout 15 \
@@ -201,7 +201,7 @@ aws lambda create-function \
 aws lambda create-function \
   --function-name mcp-tool-compound-interest \
   --runtime java21 \
-  --handler com.example.mcp.tools.compoundinterest.CompoundInterestLambdaHandler::handleRequest \
+  --handler com.milind.mcp.tools.compoundinterest.CompoundInterestLambdaHandler::handleRequest \
   --role arn:aws:iam::${ACCOUNT_ID}:role/mcp-tool-execution-role \
   --zip-file fileb://tool-compound-interest/target/tool-compound-interest.jar \
   --timeout 15 \
@@ -223,7 +223,7 @@ Lambda's own limit, and it's a common source of confusion when the two don't mat
 aws lambda create-function \
   --function-name mcp-router \
   --runtime java21 \
-  --handler com.example.mcp.router.McpRouterHandler::handleRequest \
+  --handler com.milind.mcp.router.McpRouterHandler::handleRequest \
   --role arn:aws:iam::${ACCOUNT_ID}:role/mcp-router-execution-role \
   --zip-file fileb://router/target/router.jar \
   --timeout 29 \
