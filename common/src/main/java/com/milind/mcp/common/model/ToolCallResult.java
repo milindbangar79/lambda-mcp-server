@@ -2,6 +2,8 @@ package com.milind.mcp.common.model;
 
 import java.util.List;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
+
 /**
  * Result payload for {@code tools/call}. Per the MCP spec, a failure that happens
  * <i>inside</i> the tool (bad input, downstream error) is reported as a normal
@@ -12,6 +14,17 @@ import java.util.List;
 public class ToolCallResult {
 
     private List<ToolContent> content;
+
+    /**
+     * {@code @JsonProperty("isError")} is load-bearing, not decorative: Jackson's default
+     * bean-property naming strips the {@code is} prefix from an {@code isXxx()} getter,
+     * so without this annotation the field serializes on the wire as {@code "error"},
+     * not the MCP-spec-mandated {@code "isError"} - verified empirically (a plain
+     * getter/setter pair round-trips fine in-process, which is exactly why this went
+     * unnoticed until an external, spec-literal client - mcp-client - was built against
+     * the real wire JSON instead of Java objects).
+     */
+    @JsonProperty("isError")
     private boolean isError;
 
     public ToolCallResult() {

@@ -1,5 +1,6 @@
 package com.milind.mcp.common.protocol;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.databind.JsonNode;
 
 /**
@@ -53,7 +54,19 @@ public class JsonRpcRequest {
         this.params = params;
     }
 
-    /** A request with no {@code id} is a JSON-RPC notification: fire-and-forget, no response. */
+    /**
+     * A request with no {@code id} is a JSON-RPC notification: fire-and-forget, no response.
+     *
+     * <p>{@code @JsonIgnore} is load-bearing, not decorative: without it, Jackson's default
+     * bean introspection treats this as a serializable {@code notification} property (it
+     * matches the {@code isXxx()} getter pattern despite having no backing field), which a
+     * client serializing this class would then send over the wire - and the router's own
+     * default {@code ObjectMapper} rejects unrecognized properties by default, so every such
+     * request would fail to parse. Verified empirically while building {@code mcp-client},
+     * the first thing in this repo to actually serialize a {@code JsonRpcRequest} rather
+     * than only ever deserializing one.
+     */
+    @JsonIgnore
     public boolean isNotification() {
         return id == null;
     }

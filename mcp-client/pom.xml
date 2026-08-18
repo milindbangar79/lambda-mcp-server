@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>com.milind.mcp</groupId>
+    <artifactId>lambda-mcp-server-parent</artifactId>
+    <version>1.0.0</version>
+  </parent>
+
+  <artifactId>mcp-client</artifactId>
+  <packaging>jar</packaging>
+  <name>MCP Client (CLI)</name>
+  <description>
+    A standalone command-line MCP client - not a Lambda. Its job is a conversational
+    loop (accept a natural-language prompt, discover the tools the router publishes via
+    tools/list, ask Claude which tool - if any - answers the prompt and with what
+    arguments, call that tool through the deployed API Gateway endpoint, then let Claude
+    turn the tool result into a final answer). That loop belongs wherever the human or
+    calling agent is, not inside the same serverless backend it's calling - the client
+    talks to the router's public API Gateway URL over plain HTTPS exactly like the curl
+    examples in the README, so it is architecturally a consumer of this platform, not
+    part of it. See the README's "mcp-client" section for the full lambda-vs-CLI
+    rationale.
+
+    Deliberately has no Spring dependency: a short-lived CLI process doesn't need a DI
+    container's benefits, and every other module in this repo pulls in only as much
+    framework as its workload actually needs.
+  </description>
+
+  <dependencies>
+    <!-- Reuses the JSON-RPC/MCP model classes rather than duplicating them - they're
+         inherently a client+server-shared protocol contract. -->
+    <dependency>
+      <groupId>com.milind.mcp</groupId>
+      <artifactId>common</artifactId>
+    </dependency>
+
+    <dependency>
+      <groupId>com.fasterxml.jackson.core</groupId>
+      <artifactId>jackson-databind</artifactId>
+    </dependency>
+
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.assertj</groupId>
+      <artifactId>assertj-core</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.mockito</groupId>
+      <artifactId>mockito-core</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <finalName>mcp-client</finalName>
+    <plugins>
+      <!-- Full override (not an addition to pluginManagement's config) - this is the
+           only module that's actually run directly via `java -jar`, so it's the only
+           one that needs a Main-Class manifest entry. -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-shade-plugin</artifactId>
+        <executions>
+          <execution>
+            <phase>package</phase>
+            <goals>
+              <goal>shade</goal>
+            </goals>
+            <configuration>
+              <createDependencyReducedPom>false</createDependencyReducedPom>
+              <filters>
+                <filter>
+                  <artifact>*:*</artifact>
+                  <excludes>
+                    <exclude>META-INF/*.SF</exclude>
+                    <exclude>META-INF/*.DSA</exclude>
+                    <exclude>META-INF/*.RSA</exclude>
+                    <exclude>module-info.class</exclude>
+                  </excludes>
+                </filter>
+              </filters>
+              <transformers>
+                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                  <mainClass>com.milind.mcp.client.Main</mainClass>
+                </transformer>
+              </transformers>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+</project>

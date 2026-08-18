@@ -43,7 +43,7 @@ their own typed JSON output.
 ```
 lambda-mcp-server/
 ├── pom.xml                       parent (Maven multi-module)
-├── common/                       JSON-RPC 2.0 + MCP model classes (router-only; no Spring/AWS deps)
+├── common/                       JSON-RPC 2.0 + MCP model classes (shared by router and mcp-client; no Spring/AWS deps)
 ├── router/                       the lambda-mcp-server function
 │   └── .../router/
 │       ├── McpRouterHandler.java       Lambda entry point (API Gateway proxy event in/out)
@@ -54,7 +54,15 @@ lambda-mcp-server/
 │       └── dispatch/                   ToolDispatcherService (invokes the target tool Lambda)
 ├── tool-greetings/                the "greetings" tool Lambda
 ├── tool-simple-interest/          the "simple-interest-calculator" tool Lambda
-└── tool-compound-interest/        the "compound-interest-calculator" tool Lambda
+├── tool-compound-interest/        the "compound-interest-calculator" tool Lambda
+└── mcp-client/                    standalone CLI - discovers tools, resolves prompts via Claude, calls them
+    └── .../client/
+        ├── Main.java                    CLI entry point (single-shot or interactive)
+        ├── config/ClientConfig.java     env-var configuration (API key, server URL, model)
+        ├── http/                        HttpTransport abstraction + JDK-backed implementation
+        ├── mcp/McpClient.java           JSON-RPC client for the router's API Gateway endpoint
+        ├── llm/                         AnthropicClient + message/tool-use helpers
+        └── orchestrator/PromptOrchestrator.java   the resolve -> call -> answer loop
 ```
 
 ## Architecture Diagrams
@@ -348,6 +356,7 @@ These were confirmed up front rather than assumed:
 | Tool registry | Hardcoded in `ToolRegistryConfig` (a Spring `@Bean` list) | Data-driven registry, DynamoDB-backed, so tools onboard without a router redeploy (§4.1) | For a fixed 3-tool sample, a DynamoDB table buys nothing but another resource to provision/seed. The registry record shape (name, version, description, `compute_ref`, `owningTeam`, `gateStatus`, `trustScore`, `rateLimitTier`, `concurrencyBudget`) mirrors §4.1 field-for-field, and `ToolRegistryService`'s public contract is exactly what you'd keep if you later swapped the config class for a DynamoDB-backed implementation. |
 | Infrastructure | No IaC. Java/Spring source only; this README documents manual AWS CLI/console steps | Not addressed by the Blueprint (out of scope there too) | Explicit choice — deploy manually, wire up SAM/CDK/Terraform later if/when this graduates past a sample. |
 | Rate limiting | **API Gateway only** (stage/usage-plan throttling — the "global axis", §8.3) | Two-layer enforcement: gateway (coarse) **and** router (authoritative, per-tool/per-consumer, backed by a distributed counter store) (§8.5) | The Blueprint is explicit that plain API Gateway usage plans are "sufficient for the global axis, insufficient alone for the per-tool axis, since every tool call shares one route" (§8.3) — true here too: `/mcp` is a single route for all three tools. Router-level per-tool/per-consumer accounting, the `-32000` throttle error contract, and fail-open/fail-closed per tier (§9.1) are **not implemented** — see "Known limitations" below. `McpErrorCodes.RATE_LIMIT_EXCEEDED` is defined and unused, deliberately, as the slot a future limiter would fill. |
+| `mcp-client` architecture | **Standalone Java CLI**, not a Lambda | Not addressed by the Blueprint (client-side is out of scope there); raised as an open question when this module was requested | An MCP client's job is a conversational loop driven by wherever the human/agent is — fundamentally the opposite direction from this repo's Lambdas, which exist to be *called*. It talks to the router's public API Gateway URL over plain HTTPS, the same as the curl examples below, making it architecturally a consumer of this platform rather than part of it. Hosting it as a Lambda would need an API Gateway route plus externalized conversation state (DynamoDB) to simulate what a local process gets for free. See the "mcp-client" section below for the full CLI. |
 
 ## Prerequisites
 
@@ -698,6 +707,101 @@ describes ("the first sign of trouble being an opaque 429 with no machine-readab
 backoff signal") and is a direct consequence of enforcing only at the gateway layer —
 see "Known limitations" below.
 
+## mcp-client (CLI)
+
+A standalone command-line client: given a natural-language prompt, it discovers the
+tools the deployed router publishes, asks Claude which tool (if any) answers the
+prompt and with what arguments, calls that tool through the same public API Gateway
+endpoint the curl examples above hit, and lets Claude turn the result into a final
+answer. See the "Design decisions" table above for why this is a plain `java -jar`
+and not a fifth Lambda.
+
+### How tool resolution works
+
+`tools/list`'s `inputSchema` on each tool is already a JSON Schema object — that maps
+almost directly onto the Messages API's `tools[].input_schema` field, so the mapping in
+`AnthropicMessages.toolsArray()` is close to a direct copy. Claude's native tool-use
+(function calling) does the actual resolution; this client doesn't parse natural
+language itself or maintain its own intent-matching logic anywhere.
+
+One full round trip looks like:
+
+1. Send the prompt + the tool catalog to Claude (`POST /v1/messages`).
+2. If Claude's `stop_reason` is `tool_use`: extract the tool name + arguments it built,
+   call that tool via `McpClient.callTool(...)` (a normal `tools/call` JSON-RPC request
+   against the router), and send the result back to Claude as a `tool_result` block.
+3. Otherwise, Claude answered directly - print its text and stop.
+
+Bounded to 3 rounds per prompt (`PromptOrchestrator`'s `maxToolCalls`) so a model that
+keeps calling tools, or a tool that keeps failing, can't hang a session a person is
+waiting on.
+
+### Configuration
+
+Environment variables only - "simple references", not a secrets manager or config
+file. The API key is never hardcoded, logged, or passed as a CLI argument (which would
+leak into shell history).
+
+| Variable | Required | Purpose |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | yes | Claude API key, sent as the `x-api-key` header |
+| `MCP_SERVER_URL` | yes | The deployed router's API Gateway invoke URL, e.g. `https://xxxx.execute-api.us-east-1.amazonaws.com/prod/mcp` |
+| `CLAUDE_MODEL` | no | Defaults to `claude-sonnet-5` |
+| `ANTHROPIC_API_BASE_URL` | no | Defaults to `https://api.anthropic.com` |
+
+### Build and run
+
+```bash
+mvn clean package -pl mcp-client -am
+
+export ANTHROPIC_API_KEY=sk-ant-...
+export MCP_SERVER_URL=https://xxxx.execute-api.us-east-1.amazonaws.com/prod/mcp
+
+# Single-shot: resolve one prompt and exit (non-zero exit code on failure)
+java -jar mcp-client/target/mcp-client.jar "What's the compound interest on 1000 at 8% for 1 year, compounded quarterly?"
+
+# Interactive: discover tools once, then read prompts from stdin until 'exit'/'quit'
+java -jar mcp-client/target/mcp-client.jar
+```
+
+Example interactive session:
+
+```
+Connected to lambda-mcp-server v1.0.0 (protocol 2024-11-05) at https://xxxx.execute-api.us-east-1.amazonaws.com/prod/mcp
+Discovered 3 tool(s): [greetings, simple-interest-calculator, compound-interest-calculator]
+Interactive mode. Type a prompt and press Enter; 'exit' or 'quit' to leave.
+> Say hi to Ada
+Hello Ada! I've greeted you through the greetings tool.
+> What's 5% simple interest on 1000 for 2 years?
+The simple interest is $100, giving a total amount of $1,100 (using SI = (P x R x T) / 100).
+> exit
+```
+
+### Two real bugs this uncovered
+
+Building an actual external client - rather than only ever testing the router against
+itself in-process - surfaced two Jackson serialization bugs in the `common` module that
+every prior test had been blind to, because in-process `ObjectMapper.convertValue` calls
+happened to be internally consistent even when wrong relative to the wire format a real
+client depends on:
+
+- **`ToolCallResult.isError`** was serializing as `"error"`, not the MCP-spec-mandated
+  `"isError"` - Jackson's default bean-property naming strips the `is` prefix from an
+  `isXxx()` getter. Fixed with `@JsonProperty("isError")` on the field.
+- **`JsonRpcRequest.isNotification()`** - a derived helper method with no backing field -
+  was being serialized as a spurious `"notification"` property on every outgoing
+  request. Combined with the router's default `ObjectMapper` rejecting unrecognized
+  properties, this would have made *every* request from a real external client fail to
+  parse. Fixed with `@JsonIgnore` on the method, plus (defense in depth, not just a
+  patch for this one bug) disabling `FAIL_ON_UNKNOWN_PROPERTIES` on the router's
+  `ObjectMapper` in `JacksonConfig`, so a spec-compliant client sending fields this
+  server doesn't model doesn't get its whole request rejected.
+
+Both were caught by building `mcp-client` against real HTTP round trips (a local mock
+router server for the JSON-RPC side, and the real `api.anthropic.com` for the Claude
+side) rather than trusting the existing mocked unit tests, which - correctly, for what
+they tested - never exercised actual wire serialization.
+
 ## Local build verification (no AWS required)
 
 ```bash
@@ -707,8 +811,12 @@ mvn clean verify
 Runs all unit tests: tool calculation logic (`SimpleInterestServiceTest`,
 `CompoundInterestServiceTest`, `GreetingServiceTest`), the router's JSON-RPC dispatch
 logic against mocked collaborators (`McpProtocolServiceTest`), the registry
-(`ToolRegistryServiceTest`), and a real Spring context boot (`RouterApplicationContextTest`)
-that catches DI wiring mistakes the mocked tests can't see.
+(`ToolRegistryServiceTest`), a real Spring context boot (`RouterApplicationContextTest`)
+that catches DI wiring mistakes the mocked tests can't see, and `mcp-client`'s config
+parsing, JSON-RPC client, Claude message-building/response-parsing, and the full
+resolve-call-answer orchestration loop (`PromptOrchestratorTest`, with `McpClient` and
+`AnthropicClient` mocked so the loop's own branching is what's under test) - 48 tests
+in total, none of which make a real network call.
 
 ## Known limitations (intentional, for this sample)
 

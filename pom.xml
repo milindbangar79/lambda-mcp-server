@@ -23,6 +23,7 @@
     <module>tool-greetings</module>
     <module>tool-simple-interest</module>
     <module>tool-compound-interest</module>
+    <module>mcp-client</module>
   </modules>
 
   <properties>
