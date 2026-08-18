@@ -43,7 +43,7 @@ their own typed JSON output.
 ```
 lambda-mcp-server/
 ├── pom.xml                       parent (Maven multi-module)
-├── common/                       JSON-RPC 2.0 + MCP model classes (router-only; no Spring/AWS deps)
+├── common/                       JSON-RPC 2.0 + MCP model classes (shared by router and mcp-client; no Spring/AWS deps)
 ├── router/                       the lambda-mcp-server function
 │   └── .../router/
 │       ├── McpRouterHandler.java       Lambda entry point (API Gateway proxy event in/out)
@@ -54,7 +54,296 @@ lambda-mcp-server/
 │       └── dispatch/                   ToolDispatcherService (invokes the target tool Lambda)
 ├── tool-greetings/                the "greetings" tool Lambda
 ├── tool-simple-interest/          the "simple-interest-calculator" tool Lambda
-└── tool-compound-interest/        the "compound-interest-calculator" tool Lambda
+├── tool-compound-interest/        the "compound-interest-calculator" tool Lambda
+└── mcp-client/                    standalone CLI - discovers tools, resolves prompts via Claude, calls them
+    └── .../client/
+        ├── Main.java                    CLI entry point (single-shot or interactive)
+        ├── config/ClientConfig.java     env-var configuration (API key, server URL, model)
+        ├── http/                        HttpTransport abstraction + JDK-backed implementation
+        ├── mcp/McpClient.java           JSON-RPC client for the router's API Gateway endpoint
+        ├── llm/                         AnthropicClient + message/tool-use helpers
+        └── orchestrator/PromptOrchestrator.java   the resolve -> call -> answer loop
+```
+
+## Architecture Diagrams
+
+Diagrams below are drawn directly from the actual class/method names in this repo (not
+a stylized approximation) so they stay a reliable map of the code, not just the concept.
+GitHub renders all of these natively from the Mermaid fences.
+
+### Component diagram
+
+Container/component view in the C4 sense used throughout this README: the deployable
+units and how they talk to each other. `McpRouterHandler`, `McpProtocolService`,
+`ToolRegistryService`, and `ToolDispatcherService` are the components *inside* the
+router container (Blueprint §4.3); each tool Lambda is its own container, invoked only
+by the router.
+
+```mermaid
+flowchart TD
+    Client["MCP Client<br/>(agent / curl)"]
+
+    subgraph AWS["AWS Account"]
+        APIGW["API Gateway<br/>POST /mcp (throttled: stage + usage plan)"]
+
+        subgraph RouterLambda["lambda-mcp-server (Router Lambda)"]
+            Handler["McpRouterHandler<br/>(implements Lambda RequestHandler,<br/>API Gateway proxy event in/out)"]
+            Protocol["McpProtocolService<br/>(initialize / tools-list / tools-call)"]
+            Registry["ToolRegistryService<br/>+ ToolRegistryConfig<br/>(hardcoded registry, §4.1 schema)"]
+            Dispatcher["ToolDispatcherService<br/>(AWS SDK LambdaClient.invoke)"]
+
+            Handler --> Protocol
+            Protocol --> Registry
+            Protocol --> Dispatcher
+        end
+
+        subgraph ToolGreetings["tool-greetings Lambda"]
+            GH["GreetingLambdaHandler"] --> GS["GreetingService"]
+        end
+        subgraph ToolSimple["tool-simple-interest Lambda"]
+            SH["SimpleInterestLambdaHandler"] --> SS["SimpleInterestService"]
+        end
+        subgraph ToolCompound["tool-compound-interest Lambda"]
+            CH["CompoundInterestLambdaHandler"] --> CS["CompoundInterestService"]
+        end
+    end
+
+    Client -->|"POST /mcp<br/>JSON-RPC 2.0 body"| APIGW
+    APIGW -->|"Lambda proxy<br/>integration"| Handler
+    Dispatcher -->|"lambda:InvokeFunction<br/>(functionName from compute_ref)"| GH
+    Dispatcher -->|"lambda:InvokeFunction"| SH
+    Dispatcher -->|"lambda:InvokeFunction"| CH
+```
+
+### Class diagram
+
+Split into two diagrams for readability: the shared JSON-RPC/MCP protocol contract
+(`common` module, used only by the router), and the router's own internals plus one
+tool module as an exemplar.
+
+**Common protocol & model classes** (`common` module):
+
+```mermaid
+classDiagram
+    class JsonRpcRequest {
+        +String jsonrpc
+        +Object id
+        +String method
+        +JsonNode params
+        +isNotification() boolean
+    }
+    class JsonRpcResponse {
+        +String jsonrpc
+        +Object id
+        +Object result
+        +JsonRpcError error
+        +success(id, result) JsonRpcResponse$
+        +failure(id, error) JsonRpcResponse$
+    }
+    class JsonRpcError {
+        +int code
+        +String message
+        +Object data
+    }
+    class McpErrorCodes {
+        <<utility>>
+        +int PARSE_ERROR$
+        +int METHOD_NOT_FOUND$
+        +int INVALID_PARAMS$
+        +int INTERNAL_ERROR$
+        +int RATE_LIMIT_EXCEEDED$
+        +int TOOL_NOT_FOUND$
+        +int TOOL_NOT_PUBLISHED$
+    }
+    class McpTool {
+        +String name
+        +String description
+        +Map~String,Object~ inputSchema
+    }
+    class ToolsListResult {
+        +List~McpTool~ tools
+    }
+    class ToolCallParams {
+        +String name
+        +JsonNode arguments
+    }
+    class ToolCallResult {
+        +List~ToolContent~ content
+        +boolean isError
+        +ok(text) ToolCallResult$
+        +error(text) ToolCallResult$
+    }
+    class ToolContent {
+        +String type
+        +String text
+        +text(text) ToolContent$
+    }
+    class InitializeResult {
+        +String protocolVersion
+        +Map~String,Object~ capabilities
+        +ServerInfo serverInfo
+    }
+    class ServerInfo {
+        +String name
+        +String version
+    }
+
+    JsonRpcResponse "1" *-- "0..1" JsonRpcError : error
+    JsonRpcResponse ..> McpErrorCodes : uses codes from
+    ToolCallResult "1" *-- "*" ToolContent : content
+    ToolsListResult "1" *-- "*" McpTool : tools
+    InitializeResult "1" *-- "1" ServerInfo : serverInfo
+```
+
+**Router internals + exemplar tool module** (`tool-greetings` shown; `tool-simple-interest`
+and `tool-compound-interest` mirror this exact Handler → Service → Request/Response
+shape, just with different calculation logic):
+
+```mermaid
+classDiagram
+    class McpRouterHandler {
+        -ConfigurableApplicationContext applicationContext
+        -McpProtocolService protocolService
+        -ObjectMapper objectMapper
+        +handleRequest(event, context) APIGatewayProxyResponseEvent
+    }
+    class McpProtocolService {
+        -ToolRegistryService toolRegistryService
+        -ToolDispatcherService toolDispatcherService
+        +handle(request, correlationId) Optional~JsonRpcResponse~
+    }
+    class ToolRegistryService {
+        -List~ToolDefinition~ tools
+        +listPublishedTools() List~ToolDefinition~
+        +findByName(name) Optional~ToolDefinition~
+    }
+    class ToolDefinition {
+        +String name
+        +String version
+        +String description
+        +Map~String,Object~ inputSchema
+        +String functionName
+        +String owningTeam
+        +String gateStatus
+        +double trustScore
+        +String rateLimitTier
+        +int concurrencyBudget
+        +isPublished() boolean
+    }
+    class ToolDispatcherService {
+        -LambdaClient lambdaClient
+        +invoke(tool, arguments, correlationId) String
+    }
+    class ToolInvocationException {
+        <<RuntimeException>>
+    }
+    class GreetingLambdaHandler {
+        -GreetingService greetingService
+        +handleRequest(input, context) GreetingResponse
+    }
+    class GreetingService {
+        +greet(request) GreetingResponse
+    }
+    class GreetingRequest {
+        +String name
+    }
+    class GreetingResponse {
+        +String message
+    }
+
+    McpRouterHandler --> McpProtocolService : delegates to
+    McpProtocolService --> ToolRegistryService : looks up tool
+    McpProtocolService --> ToolDispatcherService : dispatches call
+    ToolRegistryService "1" *-- "*" ToolDefinition : holds
+    ToolDispatcherService ..> ToolDefinition : reads functionName
+    ToolDispatcherService ..> ToolInvocationException : throws on functionError
+    GreetingLambdaHandler --> GreetingService : delegates to
+    GreetingService ..> GreetingRequest : validates
+    GreetingService ..> GreetingResponse : builds
+    ToolDispatcherService ..> GreetingLambdaHandler : invokes via AWS SDK Invoke API
+```
+
+### Sequence diagram: `tools/call` (any tool)
+
+The general request path every tool call takes, end to end - this is what the router
+does regardless of which of the three tools is named in `params.name`.
+
+```mermaid
+sequenceDiagram
+    actor Client
+    participant APIGW as API Gateway
+    participant Handler as McpRouterHandler
+    participant Protocol as McpProtocolService
+    participant Registry as ToolRegistryService
+    participant Dispatcher as ToolDispatcherService
+    participant ToolLambda as Tool Lambda<br/>(e.g. GreetingLambdaHandler)
+
+    Client->>APIGW: POST /mcp<br/>{jsonrpc, id, method: "tools/call",<br/>params: {name, arguments}}
+    APIGW->>Handler: Lambda proxy integration<br/>(APIGatewayProxyRequestEvent)
+    Handler->>Handler: parse body into JsonRpcRequest<br/>correlationId = context.getAwsRequestId()
+    Handler->>Protocol: handle(request, correlationId)
+    Protocol->>Registry: findByName(params.name)
+    Registry-->>Protocol: Optional of ToolDefinition
+
+    alt tool not found
+        Protocol-->>Handler: JsonRpcResponse.failure(TOOL_NOT_FOUND)
+    else tool found but gateStatus != "published"
+        Protocol-->>Handler: JsonRpcResponse.failure(TOOL_NOT_PUBLISHED)
+    else tool found and published
+        Protocol->>Dispatcher: invoke(tool, arguments, correlationId)
+        Dispatcher->>ToolLambda: lambdaClient.invoke()<br/>payload = arguments JSON<br/>clientContext = {correlationId}
+        ToolLambda->>ToolLambda: Service.method(request)<br/>(validate + compute)
+
+        alt tool throws (e.g. IllegalArgumentException)
+            ToolLambda-->>Dispatcher: InvokeResponse.functionError set
+            Dispatcher-->>Protocol: throws ToolInvocationException
+            Protocol-->>Handler: ToolCallResult.error(message)<br/>(isError: true)
+        else tool succeeds
+            ToolLambda-->>Dispatcher: response payload (JSON)
+            Dispatcher-->>Protocol: raw JSON string
+            Protocol-->>Handler: ToolCallResult.ok(json)<br/>(isError: false)
+        end
+
+        Protocol-->>Handler: JsonRpcResponse.success(id, result)
+    end
+
+    Handler-->>APIGW: APIGatewayProxyResponseEvent<br/>{statusCode: 200, body: JSON-RPC response}
+    APIGW-->>Client: HTTP 200 + JSON-RPC response
+```
+
+### Activity diagram: calling the `greetings` tool
+
+A concrete walk through the sequence diagram above for the simplest possible case -
+a client invoking `tools/call` for `greetings` - including the two validation branches
+that actually exist in the code: the registry gate check in `McpProtocolService`, and
+the blank-name check in `GreetingService.greet()`.
+
+```mermaid
+flowchart TD
+    Start([Client calls tools/call<br/>name: greetings, arguments: name = Ada]) --> Parse[Router parses the<br/>JSON-RPC request body]
+    Parse --> ParseOk{Valid JSON-RPC?}
+    ParseOk -->|No| ParseErr[/Return JSON-RPC error<br/>PARSE_ERROR -32700/] --> End1([End])
+    ParseOk -->|Yes| Lookup[McpProtocolService looks up<br/>'greetings' in ToolRegistryService]
+
+    Lookup --> Found{Tool registered?}
+    Found -->|No| NotFound[/Return JSON-RPC error<br/>TOOL_NOT_FOUND -32001/] --> End2([End])
+    Found -->|Yes| Published{gateStatus ==<br/>'published'?}
+    Published -->|No| NotPublished[/Return JSON-RPC error<br/>TOOL_NOT_PUBLISHED -32002/] --> End3([End])
+
+    Published -->|Yes| Dispatch[ToolDispatcherService invokes<br/>mcp-tool-greetings Lambda<br/>payload: name = Ada]
+    Dispatch --> Handler[GreetingLambdaHandler.handleRequest<br/>receives GreetingRequest]
+    Handler --> Validate{name blank<br/>or null?}
+
+    Validate -->|Yes| Throw[GreetingService throws<br/>IllegalArgumentException]
+    Throw --> FuncErr[Lambda invoke returns<br/>with functionError set]
+    FuncErr --> ToolInvEx[Dispatcher throws<br/>ToolInvocationException]
+    ToolInvEx --> IsError[Protocol catches it,<br/>returns ToolCallResult.error<br/>isError: true]
+    IsError --> Respond1[Router returns HTTP 200<br/>with isError: true content] --> End4([End])
+
+    Validate -->|No| Build["Build message:<br/>'Hello, Ada! Welcome to<br/>the MCP Lambda server.'"]
+    Build --> Return[Lambda returns GreetingResponse<br/>as JSON]
+    Return --> Ok[Dispatcher returns raw JSON,<br/>Protocol wraps as<br/>ToolCallResult.ok isError: false]
+    Ok --> Respond2[Router returns HTTP 200<br/>with the greeting as<br/>MCP text content] --> End5([End])
 ```
 
 ## Design decisions (and where this sample deliberately diverges from the Blueprint)
@@ -67,6 +356,7 @@ These were confirmed up front rather than assumed:
 | Tool registry | Hardcoded in `ToolRegistryConfig` (a Spring `@Bean` list) | Data-driven registry, DynamoDB-backed, so tools onboard without a router redeploy (§4.1) | For a fixed 3-tool sample, a DynamoDB table buys nothing but another resource to provision/seed. The registry record shape (name, version, description, `compute_ref`, `owningTeam`, `gateStatus`, `trustScore`, `rateLimitTier`, `concurrencyBudget`) mirrors §4.1 field-for-field, and `ToolRegistryService`'s public contract is exactly what you'd keep if you later swapped the config class for a DynamoDB-backed implementation. |
 | Infrastructure | No IaC. Java/Spring source only; this README documents manual AWS CLI/console steps | Not addressed by the Blueprint (out of scope there too) | Explicit choice — deploy manually, wire up SAM/CDK/Terraform later if/when this graduates past a sample. |
 | Rate limiting | **API Gateway only** (stage/usage-plan throttling — the "global axis", §8.3) | Two-layer enforcement: gateway (coarse) **and** router (authoritative, per-tool/per-consumer, backed by a distributed counter store) (§8.5) | The Blueprint is explicit that plain API Gateway usage plans are "sufficient for the global axis, insufficient alone for the per-tool axis, since every tool call shares one route" (§8.3) — true here too: `/mcp` is a single route for all three tools. Router-level per-tool/per-consumer accounting, the `-32000` throttle error contract, and fail-open/fail-closed per tier (§9.1) are **not implemented** — see "Known limitations" below. `McpErrorCodes.RATE_LIMIT_EXCEEDED` is defined and unused, deliberately, as the slot a future limiter would fill. |
+| `mcp-client` architecture | **Standalone Java CLI**, not a Lambda | Not addressed by the Blueprint (client-side is out of scope there); raised as an open question when this module was requested | An MCP client's job is a conversational loop driven by wherever the human/agent is — fundamentally the opposite direction from this repo's Lambdas, which exist to be *called*. It talks to the router's public API Gateway URL over plain HTTPS, the same as the curl examples below, making it architecturally a consumer of this platform rather than part of it. Hosting it as a Lambda would need an API Gateway route plus externalized conversation state (DynamoDB) to simulate what a local process gets for free. See the "mcp-client" section below for the full CLI. |
 
 ## Prerequisites
 
@@ -75,6 +365,26 @@ These were confirmed up front rather than assumed:
 - An AWS account with permissions to create Lambda functions, IAM roles, and an API
   Gateway REST API (for the deploy steps)
 - AWS CLI v2 (for the deploy steps) and `jq` (optional, for pretty-printing test responses)
+
+## Framework version
+
+Built on **Spring Boot 4.1.0** (Spring Framework 7.0.8). Note: Spring Boot **4.1.1**
+does not exist on Maven Central as of this writing - verified directly against
+`repo.maven.apache.org` rather than assumed. 4.1.0 (released 2026-06-10) is the latest
+4.1.x release; bump `spring-boot.version` in the parent `pom.xml` if/when 4.1.1 ships.
+
+This upgrade (from the previous 3.3.5 baseline) required **no application code changes**.
+Spring Boot 4's headline breaking change - the switch to Jackson 3 (`tools.jackson.*`)
+as the default JSON library - only affects apps that rely on Boot's autoconfigured
+`ObjectMapper`/`JsonMapper` bean, typically via `spring-boot-starter-web`. This project
+never did either: the tool Lambdas deliberately skip `spring-boot-starter-web`
+entirely (see the design decisions table above), and the router defines its own
+Jackson 2 `ObjectMapper` bean explicitly (`JacksonConfig`) rather than relying on
+autoconfiguration - which was already necessary under 3.3.5, since Boot's Jackson
+autoconfiguration itself requires `spring-web` on the classpath. Verified empirically:
+Spring Boot 4.1.0's own BOM still manages the classic `com.fasterxml.jackson.core:jackson-databind`
+(Jackson 2) coordinates at 2.21.4, and `spring-boot-starter` (the non-web starter every
+module here uses) does not pull Jackson 3 in transitively at all.
 
 ## Build
 
@@ -94,10 +404,10 @@ Build artifacts:
 
 | Module | Jar | Handler |
 |---|---|---|
-| router | `router/target/router.jar` (~20 MB) | `com.example.mcp.router.McpRouterHandler::handleRequest` |
-| tool-greetings | `tool-greetings/target/tool-greetings.jar` (~7 MB) | `com.example.mcp.tools.greetings.GreetingLambdaHandler::handleRequest` |
-| tool-simple-interest | `tool-simple-interest/target/tool-simple-interest.jar` (~7 MB) | `com.example.mcp.tools.simpleinterest.SimpleInterestLambdaHandler::handleRequest` |
-| tool-compound-interest | `tool-compound-interest/target/tool-compound-interest.jar` (~7 MB) | `com.example.mcp.tools.compoundinterest.CompoundInterestLambdaHandler::handleRequest` |
+| router | `router/target/router.jar` (~20 MB) | `com.milind.mcp.router.McpRouterHandler::handleRequest` |
+| tool-greetings | `tool-greetings/target/tool-greetings.jar` (~7 MB) | `com.milind.mcp.tools.greetings.GreetingLambdaHandler::handleRequest` |
+| tool-simple-interest | `tool-simple-interest/target/tool-simple-interest.jar` (~7 MB) | `com.milind.mcp.tools.simpleinterest.SimpleInterestLambdaHandler::handleRequest` |
+| tool-compound-interest | `tool-compound-interest/target/tool-compound-interest.jar` (~7 MB) | `com.milind.mcp.tools.compoundinterest.CompoundInterestLambdaHandler::handleRequest` |
 
 All comfortably under Lambda's 50 MB zip direct-upload limit (Blueprint §5.1).
 
@@ -183,7 +493,7 @@ sleep 10
 aws lambda create-function \
   --function-name mcp-tool-greetings \
   --runtime java21 \
-  --handler com.example.mcp.tools.greetings.GreetingLambdaHandler::handleRequest \
+  --handler com.milind.mcp.tools.greetings.GreetingLambdaHandler::handleRequest \
   --role arn:aws:iam::${ACCOUNT_ID}:role/mcp-tool-execution-role \
   --zip-file fileb://tool-greetings/target/tool-greetings.jar \
   --timeout 15 \
@@ -192,7 +502,7 @@ aws lambda create-function \
 aws lambda create-function \
   --function-name mcp-tool-simple-interest \
   --runtime java21 \
-  --handler com.example.mcp.tools.simpleinterest.SimpleInterestLambdaHandler::handleRequest \
+  --handler com.milind.mcp.tools.simpleinterest.SimpleInterestLambdaHandler::handleRequest \
   --role arn:aws:iam::${ACCOUNT_ID}:role/mcp-tool-execution-role \
   --zip-file fileb://tool-simple-interest/target/tool-simple-interest.jar \
   --timeout 15 \
@@ -201,7 +511,7 @@ aws lambda create-function \
 aws lambda create-function \
   --function-name mcp-tool-compound-interest \
   --runtime java21 \
-  --handler com.example.mcp.tools.compoundinterest.CompoundInterestLambdaHandler::handleRequest \
+  --handler com.milind.mcp.tools.compoundinterest.CompoundInterestLambdaHandler::handleRequest \
   --role arn:aws:iam::${ACCOUNT_ID}:role/mcp-tool-execution-role \
   --zip-file fileb://tool-compound-interest/target/tool-compound-interest.jar \
   --timeout 15 \
@@ -223,7 +533,7 @@ Lambda's own limit, and it's a common source of confusion when the two don't mat
 aws lambda create-function \
   --function-name mcp-router \
   --runtime java21 \
-  --handler com.example.mcp.router.McpRouterHandler::handleRequest \
+  --handler com.milind.mcp.router.McpRouterHandler::handleRequest \
   --role arn:aws:iam::${ACCOUNT_ID}:role/mcp-router-execution-role \
   --zip-file fileb://router/target/router.jar \
   --timeout 29 \
@@ -397,6 +707,101 @@ describes ("the first sign of trouble being an opaque 429 with no machine-readab
 backoff signal") and is a direct consequence of enforcing only at the gateway layer —
 see "Known limitations" below.
 
+## mcp-client (CLI)
+
+A standalone command-line client: given a natural-language prompt, it discovers the
+tools the deployed router publishes, asks Claude which tool (if any) answers the
+prompt and with what arguments, calls that tool through the same public API Gateway
+endpoint the curl examples above hit, and lets Claude turn the result into a final
+answer. See the "Design decisions" table above for why this is a plain `java -jar`
+and not a fifth Lambda.
+
+### How tool resolution works
+
+`tools/list`'s `inputSchema` on each tool is already a JSON Schema object — that maps
+almost directly onto the Messages API's `tools[].input_schema` field, so the mapping in
+`AnthropicMessages.toolsArray()` is close to a direct copy. Claude's native tool-use
+(function calling) does the actual resolution; this client doesn't parse natural
+language itself or maintain its own intent-matching logic anywhere.
+
+One full round trip looks like:
+
+1. Send the prompt + the tool catalog to Claude (`POST /v1/messages`).
+2. If Claude's `stop_reason` is `tool_use`: extract the tool name + arguments it built,
+   call that tool via `McpClient.callTool(...)` (a normal `tools/call` JSON-RPC request
+   against the router), and send the result back to Claude as a `tool_result` block.
+3. Otherwise, Claude answered directly - print its text and stop.
+
+Bounded to 3 rounds per prompt (`PromptOrchestrator`'s `maxToolCalls`) so a model that
+keeps calling tools, or a tool that keeps failing, can't hang a session a person is
+waiting on.
+
+### Configuration
+
+Environment variables only - "simple references", not a secrets manager or config
+file. The API key is never hardcoded, logged, or passed as a CLI argument (which would
+leak into shell history).
+
+| Variable | Required | Purpose |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | yes | Claude API key, sent as the `x-api-key` header |
+| `MCP_SERVER_URL` | yes | The deployed router's API Gateway invoke URL, e.g. `https://xxxx.execute-api.us-east-1.amazonaws.com/prod/mcp` |
+| `CLAUDE_MODEL` | no | Defaults to `claude-sonnet-5` |
+| `ANTHROPIC_API_BASE_URL` | no | Defaults to `https://api.anthropic.com` |
+
+### Build and run
+
+```bash
+mvn clean package -pl mcp-client -am
+
+export ANTHROPIC_API_KEY=sk-ant-...
+export MCP_SERVER_URL=https://xxxx.execute-api.us-east-1.amazonaws.com/prod/mcp
+
+# Single-shot: resolve one prompt and exit (non-zero exit code on failure)
+java -jar mcp-client/target/mcp-client.jar "What's the compound interest on 1000 at 8% for 1 year, compounded quarterly?"
+
+# Interactive: discover tools once, then read prompts from stdin until 'exit'/'quit'
+java -jar mcp-client/target/mcp-client.jar
+```
+
+Example interactive session:
+
+```
+Connected to lambda-mcp-server v1.0.0 (protocol 2024-11-05) at https://xxxx.execute-api.us-east-1.amazonaws.com/prod/mcp
+Discovered 3 tool(s): [greetings, simple-interest-calculator, compound-interest-calculator]
+Interactive mode. Type a prompt and press Enter; 'exit' or 'quit' to leave.
+> Say hi to Ada
+Hello Ada! I've greeted you through the greetings tool.
+> What's 5% simple interest on 1000 for 2 years?
+The simple interest is $100, giving a total amount of $1,100 (using SI = (P x R x T) / 100).
+> exit
+```
+
+### Two real bugs this uncovered
+
+Building an actual external client - rather than only ever testing the router against
+itself in-process - surfaced two Jackson serialization bugs in the `common` module that
+every prior test had been blind to, because in-process `ObjectMapper.convertValue` calls
+happened to be internally consistent even when wrong relative to the wire format a real
+client depends on:
+
+- **`ToolCallResult.isError`** was serializing as `"error"`, not the MCP-spec-mandated
+  `"isError"` - Jackson's default bean-property naming strips the `is` prefix from an
+  `isXxx()` getter. Fixed with `@JsonProperty("isError")` on the field.
+- **`JsonRpcRequest.isNotification()`** - a derived helper method with no backing field -
+  was being serialized as a spurious `"notification"` property on every outgoing
+  request. Combined with the router's default `ObjectMapper` rejecting unrecognized
+  properties, this would have made *every* request from a real external client fail to
+  parse. Fixed with `@JsonIgnore` on the method, plus (defense in depth, not just a
+  patch for this one bug) disabling `FAIL_ON_UNKNOWN_PROPERTIES` on the router's
+  `ObjectMapper` in `JacksonConfig`, so a spec-compliant client sending fields this
+  server doesn't model doesn't get its whole request rejected.
+
+Both were caught by building `mcp-client` against real HTTP round trips (a local mock
+router server for the JSON-RPC side, and the real `api.anthropic.com` for the Claude
+side) rather than trusting the existing mocked unit tests, which - correctly, for what
+they tested - never exercised actual wire serialization.
+
 ## Local build verification (no AWS required)
 
 ```bash
@@ -406,8 +811,12 @@ mvn clean verify
 Runs all unit tests: tool calculation logic (`SimpleInterestServiceTest`,
 `CompoundInterestServiceTest`, `GreetingServiceTest`), the router's JSON-RPC dispatch
 logic against mocked collaborators (`McpProtocolServiceTest`), the registry
-(`ToolRegistryServiceTest`), and a real Spring context boot (`RouterApplicationContextTest`)
-that catches DI wiring mistakes the mocked tests can't see.
+(`ToolRegistryServiceTest`), a real Spring context boot (`RouterApplicationContextTest`)
+that catches DI wiring mistakes the mocked tests can't see, and `mcp-client`'s config
+parsing, JSON-RPC client, Claude message-building/response-parsing, and the full
+resolve-call-answer orchestration loop (`PromptOrchestratorTest`, with `McpClient` and
+`AnthropicClient` mocked so the loop's own branching is what's under test) - 48 tests
+in total, none of which make a real network call.
 
 ## Known limitations (intentional, for this sample)
 
