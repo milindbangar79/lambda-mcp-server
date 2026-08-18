@@ -29,15 +29,13 @@
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <maven.compiler.release>21</maven.compiler.release>
 
-    <spring-boot.version>3.3.5</spring-boot.version>
-    <spring-framework.version>6.1.14</spring-framework.version>
+    <!-- Spring Boot 4.1.1 does not exist on Maven Central as of this writing (verified
+         directly against repo.maven.apache.org) - 4.1.0, released 2026-06-10, is the
+         latest 4.1.x release. Pinned here; bump when 4.1.1 actually ships. -->
+    <spring-boot.version>4.1.0</spring-boot.version>
     <aws-sdk.version>2.28.11</aws-sdk.version>
     <aws-lambda-java-core.version>1.2.3</aws-lambda-java-core.version>
     <aws-lambda-java-events.version>3.13.0</aws-lambda-java-events.version>
-
-    <junit.version>5.11.2</junit.version>
-    <mockito.version>5.14.1</mockito.version>
-    <assertj.version>3.26.3</assertj.version>
 
     <maven-shade-plugin.version>3.6.0</maven-shade-plugin.version>
     <maven-compiler-plugin.version>3.13.0</maven-compiler-plugin.version>
@@ -76,11 +74,11 @@
         <version>${aws-lambda-java-events.version}</version>
       </dependency>
 
-      <dependency>
-        <groupId>org.assertj</groupId>
-        <artifactId>assertj-core</artifactId>
-        <version>${assertj.version}</version>
-      </dependency>
+      <!-- assertj-core, junit-jupiter, and mockito-core no longer need an explicit
+           version override here: unlike Spring Boot 3.x's BOM, spring-boot-dependencies
+           4.1.0 manages all three directly (previously they were only version-pinned
+           transitively via spring-boot-starter-test, which modules that don't depend on
+           the starter itself - common, and all three tool modules - didn't benefit from). -->
 
       <dependency>
         <groupId>com.milind.mcp</groupId>
@@ -133,10 +131,11 @@
                 </filters>
                 <transformers>
                   <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
-                  <!-- Spring Boot 3 autoconfiguration index; several starter jars
-                       contribute to this single resource path, so entries must be
-                       appended rather than the last jar's copy winning. Only
-                       exercised by the router module, harmless elsewhere. -->
+                  <!-- Spring Boot's autoconfiguration index (unchanged resource path from
+                       3.x through 4.1.0 - verified against the actual 4.1.0 jar); several
+                       starter jars contribute to this single resource path, so entries must
+                       be appended rather than the last jar's copy winning. Only exercised
+                       by the router module, harmless elsewhere. -->
                   <transformer implementation="org.apache.maven.plugins.shade.resource.AppendingTransformer">
                     <resource>META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports</resource>
                   </transformer>

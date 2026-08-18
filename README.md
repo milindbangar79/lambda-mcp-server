@@ -76,6 +76,26 @@ These were confirmed up front rather than assumed:
   Gateway REST API (for the deploy steps)
 - AWS CLI v2 (for the deploy steps) and `jq` (optional, for pretty-printing test responses)
 
+## Framework version
+
+Built on **Spring Boot 4.1.0** (Spring Framework 7.0.8). Note: Spring Boot **4.1.1**
+does not exist on Maven Central as of this writing - verified directly against
+`repo.maven.apache.org` rather than assumed. 4.1.0 (released 2026-06-10) is the latest
+4.1.x release; bump `spring-boot.version` in the parent `pom.xml` if/when 4.1.1 ships.
+
+This upgrade (from the previous 3.3.5 baseline) required **no application code changes**.
+Spring Boot 4's headline breaking change - the switch to Jackson 3 (`tools.jackson.*`)
+as the default JSON library - only affects apps that rely on Boot's autoconfigured
+`ObjectMapper`/`JsonMapper` bean, typically via `spring-boot-starter-web`. This project
+never did either: the tool Lambdas deliberately skip `spring-boot-starter-web`
+entirely (see the design decisions table above), and the router defines its own
+Jackson 2 `ObjectMapper` bean explicitly (`JacksonConfig`) rather than relying on
+autoconfiguration - which was already necessary under 3.3.5, since Boot's Jackson
+autoconfiguration itself requires `spring-web` on the classpath. Verified empirically:
+Spring Boot 4.1.0's own BOM still manages the classic `com.fasterxml.jackson.core:jackson-databind`
+(Jackson 2) coordinates at 2.21.4, and `spring-boot-starter` (the non-web starter every
+module here uses) does not pull Jackson 3 in transitively at all.
+
 ## Build
 
 ```bash

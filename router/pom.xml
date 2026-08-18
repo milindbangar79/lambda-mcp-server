@@ -72,16 +72,13 @@
       <artifactId>url-connection-client</artifactId>
     </dependency>
 
+    <!-- spring-boot-starter-test no longer pulls junit-vintage-engine as of Boot 4
+         (verified: absent from its dependency tree), so no exclusion is needed here
+         any more. -->
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-test</artifactId>
       <scope>test</scope>
-      <exclusions>
-        <exclusion>
-          <groupId>org.junit.vintage</groupId>
-          <artifactId>junit-vintage-engine</artifactId>
-        </exclusion>
-      </exclusions>
     </dependency>
     <dependency>
       <groupId>org.assertj</groupId>
