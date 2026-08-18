@@ -57,6 +57,287 @@ lambda-mcp-server/
 └── tool-compound-interest/        the "compound-interest-calculator" tool Lambda
 ```
 
+## Architecture Diagrams
+
+Diagrams below are drawn directly from the actual class/method names in this repo (not
+a stylized approximation) so they stay a reliable map of the code, not just the concept.
+GitHub renders all of these natively from the Mermaid fences.
+
+### Component diagram
+
+Container/component view in the C4 sense used throughout this README: the deployable
+units and how they talk to each other. `McpRouterHandler`, `McpProtocolService`,
+`ToolRegistryService`, and `ToolDispatcherService` are the components *inside* the
+router container (Blueprint §4.3); each tool Lambda is its own container, invoked only
+by the router.
+
+```mermaid
+flowchart TD
+    Client["MCP Client<br/>(agent / curl)"]
+
+    subgraph AWS["AWS Account"]
+        APIGW["API Gateway<br/>POST /mcp (throttled: stage + usage plan)"]
+
+        subgraph RouterLambda["lambda-mcp-server (Router Lambda)"]
+            Handler["McpRouterHandler<br/>(implements Lambda RequestHandler,<br/>API Gateway proxy event in/out)"]
+            Protocol["McpProtocolService<br/>(initialize / tools-list / tools-call)"]
+            Registry["ToolRegistryService<br/>+ ToolRegistryConfig<br/>(hardcoded registry, §4.1 schema)"]
+            Dispatcher["ToolDispatcherService<br/>(AWS SDK LambdaClient.invoke)"]
+
+            Handler --> Protocol
+            Protocol --> Registry
+            Protocol --> Dispatcher
+        end
+
+        subgraph ToolGreetings["tool-greetings Lambda"]
+            GH["GreetingLambdaHandler"] --> GS["GreetingService"]
+        end
+        subgraph ToolSimple["tool-simple-interest Lambda"]
+            SH["SimpleInterestLambdaHandler"] --> SS["SimpleInterestService"]
+        end
+        subgraph ToolCompound["tool-compound-interest Lambda"]
+            CH["CompoundInterestLambdaHandler"] --> CS["CompoundInterestService"]
+        end
+    end
+
+    Client -->|"POST /mcp<br/>JSON-RPC 2.0 body"| APIGW
+    APIGW -->|"Lambda proxy<br/>integration"| Handler
+    Dispatcher -->|"lambda:InvokeFunction<br/>(functionName from compute_ref)"| GH
+    Dispatcher -->|"lambda:InvokeFunction"| SH
+    Dispatcher -->|"lambda:InvokeFunction"| CH
+```
+
+### Class diagram
+
+Split into two diagrams for readability: the shared JSON-RPC/MCP protocol contract
+(`common` module, used only by the router), and the router's own internals plus one
+tool module as an exemplar.
+
+**Common protocol & model classes** (`common` module):
+
+```mermaid
+classDiagram
+    class JsonRpcRequest {
+        +String jsonrpc
+        +Object id
+        +String method
+        +JsonNode params
+        +isNotification() boolean
+    }
+    class JsonRpcResponse {
+        +String jsonrpc
+        +Object id
+        +Object result
+        +JsonRpcError error
+        +success(id, result) JsonRpcResponse$
+        +failure(id, error) JsonRpcResponse$
+    }
+    class JsonRpcError {
+        +int code
+        +String message
+        +Object data
+    }
+    class McpErrorCodes {
+        <<utility>>
+        +int PARSE_ERROR$
+        +int METHOD_NOT_FOUND$
+        +int INVALID_PARAMS$
+        +int INTERNAL_ERROR$
+        +int RATE_LIMIT_EXCEEDED$
+        +int TOOL_NOT_FOUND$
+        +int TOOL_NOT_PUBLISHED$
+    }
+    class McpTool {
+        +String name
+        +String description
+        +Map~String,Object~ inputSchema
+    }
+    class ToolsListResult {
+        +List~McpTool~ tools
+    }
+    class ToolCallParams {
+        +String name
+        +JsonNode arguments
+    }
+    class ToolCallResult {
+        +List~ToolContent~ content
+        +boolean isError
+        +ok(text) ToolCallResult$
+        +error(text) ToolCallResult$
+    }
+    class ToolContent {
+        +String type
+        +String text
+        +text(text) ToolContent$
+    }
+    class InitializeResult {
+        +String protocolVersion
+        +Map~String,Object~ capabilities
+        +ServerInfo serverInfo
+    }
+    class ServerInfo {
+        +String name
+        +String version
+    }
+
+    JsonRpcResponse "1" *-- "0..1" JsonRpcError : error
+    JsonRpcResponse ..> McpErrorCodes : uses codes from
+    ToolCallResult "1" *-- "*" ToolContent : content
+    ToolsListResult "1" *-- "*" McpTool : tools
+    InitializeResult "1" *-- "1" ServerInfo : serverInfo
+```
+
+**Router internals + exemplar tool module** (`tool-greetings` shown; `tool-simple-interest`
+and `tool-compound-interest` mirror this exact Handler → Service → Request/Response
+shape, just with different calculation logic):
+
+```mermaid
+classDiagram
+    class McpRouterHandler {
+        -ConfigurableApplicationContext applicationContext
+        -McpProtocolService protocolService
+        -ObjectMapper objectMapper
+        +handleRequest(event, context) APIGatewayProxyResponseEvent
+    }
+    class McpProtocolService {
+        -ToolRegistryService toolRegistryService
+        -ToolDispatcherService toolDispatcherService
+        +handle(request, correlationId) Optional~JsonRpcResponse~
+    }
+    class ToolRegistryService {
+        -List~ToolDefinition~ tools
+        +listPublishedTools() List~ToolDefinition~
+        +findByName(name) Optional~ToolDefinition~
+    }
+    class ToolDefinition {
+        +String name
+        +String version
+        +String description
+        +Map~String,Object~ inputSchema
+        +String functionName
+        +String owningTeam
+        +String gateStatus
+        +double trustScore
+        +String rateLimitTier
+        +int concurrencyBudget
+        +isPublished() boolean
+    }
+    class ToolDispatcherService {
+        -LambdaClient lambdaClient
+        +invoke(tool, arguments, correlationId) String
+    }
+    class ToolInvocationException {
+        <<RuntimeException>>
+    }
+    class GreetingLambdaHandler {
+        -GreetingService greetingService
+        +handleRequest(input, context) GreetingResponse
+    }
+    class GreetingService {
+        +greet(request) GreetingResponse
+    }
+    class GreetingRequest {
+        +String name
+    }
+    class GreetingResponse {
+        +String message
+    }
+
+    McpRouterHandler --> McpProtocolService : delegates to
+    McpProtocolService --> ToolRegistryService : looks up tool
+    McpProtocolService --> ToolDispatcherService : dispatches call
+    ToolRegistryService "1" *-- "*" ToolDefinition : holds
+    ToolDispatcherService ..> ToolDefinition : reads functionName
+    ToolDispatcherService ..> ToolInvocationException : throws on functionError
+    GreetingLambdaHandler --> GreetingService : delegates to
+    GreetingService ..> GreetingRequest : validates
+    GreetingService ..> GreetingResponse : builds
+    ToolDispatcherService ..> GreetingLambdaHandler : invokes via AWS SDK Invoke API
+```
+
+### Sequence diagram: `tools/call` (any tool)
+
+The general request path every tool call takes, end to end - this is what the router
+does regardless of which of the three tools is named in `params.name`.
+
+```mermaid
+sequenceDiagram
+    actor Client
+    participant APIGW as API Gateway
+    participant Handler as McpRouterHandler
+    participant Protocol as McpProtocolService
+    participant Registry as ToolRegistryService
+    participant Dispatcher as ToolDispatcherService
+    participant ToolLambda as Tool Lambda<br/>(e.g. GreetingLambdaHandler)
+
+    Client->>APIGW: POST /mcp<br/>{jsonrpc, id, method: "tools/call",<br/>params: {name, arguments}}
+    APIGW->>Handler: Lambda proxy integration<br/>(APIGatewayProxyRequestEvent)
+    Handler->>Handler: parse body into JsonRpcRequest<br/>correlationId = context.getAwsRequestId()
+    Handler->>Protocol: handle(request, correlationId)
+    Protocol->>Registry: findByName(params.name)
+    Registry-->>Protocol: Optional of ToolDefinition
+
+    alt tool not found
+        Protocol-->>Handler: JsonRpcResponse.failure(TOOL_NOT_FOUND)
+    else tool found but gateStatus != "published"
+        Protocol-->>Handler: JsonRpcResponse.failure(TOOL_NOT_PUBLISHED)
+    else tool found and published
+        Protocol->>Dispatcher: invoke(tool, arguments, correlationId)
+        Dispatcher->>ToolLambda: lambdaClient.invoke()<br/>payload = arguments JSON<br/>clientContext = {correlationId}
+        ToolLambda->>ToolLambda: Service.method(request)<br/>(validate + compute)
+
+        alt tool throws (e.g. IllegalArgumentException)
+            ToolLambda-->>Dispatcher: InvokeResponse.functionError set
+            Dispatcher-->>Protocol: throws ToolInvocationException
+            Protocol-->>Handler: ToolCallResult.error(message)<br/>(isError: true)
+        else tool succeeds
+            ToolLambda-->>Dispatcher: response payload (JSON)
+            Dispatcher-->>Protocol: raw JSON string
+            Protocol-->>Handler: ToolCallResult.ok(json)<br/>(isError: false)
+        end
+
+        Protocol-->>Handler: JsonRpcResponse.success(id, result)
+    end
+
+    Handler-->>APIGW: APIGatewayProxyResponseEvent<br/>{statusCode: 200, body: JSON-RPC response}
+    APIGW-->>Client: HTTP 200 + JSON-RPC response
+```
+
+### Activity diagram: calling the `greetings` tool
+
+A concrete walk through the sequence diagram above for the simplest possible case -
+a client invoking `tools/call` for `greetings` - including the two validation branches
+that actually exist in the code: the registry gate check in `McpProtocolService`, and
+the blank-name check in `GreetingService.greet()`.
+
+```mermaid
+flowchart TD
+    Start([Client calls tools/call<br/>name: greetings, arguments: name = Ada]) --> Parse[Router parses the<br/>JSON-RPC request body]
+    Parse --> ParseOk{Valid JSON-RPC?}
+    ParseOk -->|No| ParseErr[/Return JSON-RPC error<br/>PARSE_ERROR -32700/] --> End1([End])
+    ParseOk -->|Yes| Lookup[McpProtocolService looks up<br/>'greetings' in ToolRegistryService]
+
+    Lookup --> Found{Tool registered?}
+    Found -->|No| NotFound[/Return JSON-RPC error<br/>TOOL_NOT_FOUND -32001/] --> End2([End])
+    Found -->|Yes| Published{gateStatus ==<br/>'published'?}
+    Published -->|No| NotPublished[/Return JSON-RPC error<br/>TOOL_NOT_PUBLISHED -32002/] --> End3([End])
+
+    Published -->|Yes| Dispatch[ToolDispatcherService invokes<br/>mcp-tool-greetings Lambda<br/>payload: name = Ada]
+    Dispatch --> Handler[GreetingLambdaHandler.handleRequest<br/>receives GreetingRequest]
+    Handler --> Validate{name blank<br/>or null?}
+
+    Validate -->|Yes| Throw[GreetingService throws<br/>IllegalArgumentException]
+    Throw --> FuncErr[Lambda invoke returns<br/>with functionError set]
+    FuncErr --> ToolInvEx[Dispatcher throws<br/>ToolInvocationException]
+    ToolInvEx --> IsError[Protocol catches it,<br/>returns ToolCallResult.error<br/>isError: true]
+    IsError --> Respond1[Router returns HTTP 200<br/>with isError: true content] --> End4([End])
+
+    Validate -->|No| Build["Build message:<br/>'Hello, Ada! Welcome to<br/>the MCP Lambda server.'"]
+    Build --> Return[Lambda returns GreetingResponse<br/>as JSON]
+    Return --> Ok[Dispatcher returns raw JSON,<br/>Protocol wraps as<br/>ToolCallResult.ok isError: false]
+    Ok --> Respond2[Router returns HTTP 200<br/>with the greeting as<br/>MCP text content] --> End5([End])
+```
+
 ## Design decisions (and where this sample deliberately diverges from the Blueprint)
 
 These were confirmed up front rather than assumed:
